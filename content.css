@@ -1,0 +1,5 @@
+/* Full Window Player — Content Styles */
+
+.fwp-fullwindow-active {
+  overflow: hidden !important;
+}

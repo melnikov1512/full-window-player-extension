@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Full Window Player",
+  "version": "1.0.0",
+  "description": "Expand any video player to fill the entire browser window",
+
+  "permissions": ["storage", "activeTab", "tabs"],
+  "host_permissions": ["<all_urls>"],
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Full Window Player"
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "commands": {
+    "toggle-fullwindow": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+F",
+        "mac": "Command+Shift+F"
+      },
+      "description": "Toggle full window player"
+    }
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/icon16.png", "icons/icon48.png", "icons/icon128.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
