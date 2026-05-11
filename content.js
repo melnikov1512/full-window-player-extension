@@ -49,10 +49,17 @@ const VIDEO_ACTIVE_STYLES = {
  */
 const SITE_CONFIGS = {
   'kino.pub': {
-    // Auto-detect the actual player container from the video element upward.
-    // .app-content is the full content area — too broad; auto-detect finds the real player.
     playerSelector: null,
     elementsToHide: ['.app-header', '.app-aside'],
+    playerWrapperSelector: null,
+    videoParentLevels: 10,
+  },
+  'doramy.club': {
+    // The .player div contains tabs, episode controls + an iframe (kodikplayer.com).
+    // Making the iframe itself fixed covers all the surrounding UI chrome.
+    playerSelector: '.videoclub iframe',
+    playerSelectorMode: 'first-visible', // skip hidden/zero-size iframes
+    elementsToHide: ['header', 'aside'],
     playerWrapperSelector: null,
     videoParentLevels: 10,
   },
@@ -237,18 +244,34 @@ function applyImportantStyles(el, styles) {
 function activateWithVideo(videoEl) {
   const config = getSiteConfig();
   const playerContainer = resolvePlayerContainer(videoEl, config);
+  activeVideoEl = videoEl;
+  activateWithElement(playerContainer, config);
+}
 
+/**
+ * Core activation logic — applies full-window styles to the given player element.
+ * Used directly for iframe-based players (no top-frame <video>).
+ * @param {Element} playerContainer
+ * @param {{ elementsToHide?: string[] }|null} config
+ */
+function activateWithElement(playerContainer, config) {
   // Save references for clean restore on deactivate
   activePlayerContainer = playerContainer;
-  activeVideoEl = videoEl;
 
   // Save and apply player container styles
   saveStyles(playerContainer);
   applyImportantStyles(playerContainer, PLAYER_ACTIVE_STYLES);
 
-  // Save and apply video element styles
-  saveStyles(videoEl);
-  applyImportantStyles(videoEl, VIDEO_ACTIVE_STYLES);
+  // Ensure the iframe inside the player also fills 100% (it usually already does,
+  // but some sites set explicit pixel dimensions on the iframe element itself).
+  // Skip if the playerContainer itself IS an iframe (it's already target).
+  if (playerContainer.tagName !== 'IFRAME') {
+    const iframeInPlayer = playerContainer.querySelector('iframe');
+    if (iframeInPlayer) {
+      saveStyles(iframeInPlayer);
+      applyImportantStyles(iframeInPlayer, { width: '100%', height: '100%', border: 'none' });
+    }
+  }
 
   // Hide site-specific layout chrome (header, sidebar, etc.)
   hiddenElements = [];
@@ -269,7 +292,6 @@ function activateWithVideo(videoEl) {
   isActive = true;
   updateButton();
 
-  // Notify background of state change
   safeSendMessage({ action: 'stateChanged', isActive: true });
 }
 
@@ -312,6 +334,20 @@ function findVideoElement(callback) {
 function activateFullWindow() {
   if (isActive) return;
 
+  const config = getSiteConfig();
+
+  // If the site config provides an explicit player selector (e.g. for iframe-based players),
+  // activate directly without looking for a <video> element in the top frame.
+  if (config?.playerSelector) {
+    const playerEl = resolveConfigPlayer(config);
+    if (playerEl) {
+      activateWithElement(playerEl, config);
+    } else {
+      console.warn('[FWP] playerSelector "' + config.playerSelector + '" not found or not visible.');
+    }
+    return;
+  }
+
   findVideoElement((videoEl) => {
     if (!videoEl) {
       console.warn('[FWP] No video element found within 10 s — cannot activate.');
@@ -319,6 +355,24 @@ function activateFullWindow() {
     }
     activateWithVideo(videoEl);
   });
+}
+
+/**
+ * Resolve the player element from site config's playerSelector.
+ * Supports playerSelectorMode: 'first-visible' to skip zero-size elements.
+ * @param {{ playerSelector: string, playerSelectorMode?: string }} config
+ * @returns {Element|null}
+ */
+function resolveConfigPlayer(config) {
+  if (config.playerSelectorMode === 'first-visible') {
+    const all = document.querySelectorAll(config.playerSelector);
+    for (const el of all) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return el;
+    }
+    return null;
+  }
+  return document.querySelector(config.playerSelector) ?? null;
 }
 
 /** Deactivate full-window mode and restore all original styles. */
@@ -351,8 +405,12 @@ function deactivateFullWindow() {
     activeVideoEl = null;
   }
 
-  // Restore player container
+  // Restore player container (and iframe inside it if any)
   if (activePlayerContainer) {
+    if (activePlayerContainer.tagName !== 'IFRAME') {
+      const iframeInPlayer = activePlayerContainer.querySelector('iframe');
+      if (iframeInPlayer) restoreStyles(iframeInPlayer);
+    }
     restoreStyles(activePlayerContainer);
     activePlayerContainer = null;
   }
@@ -474,24 +532,33 @@ function hideButton() {
 // ─── Video Presence Observer ──────────────────────────────────────────────────
 
 /**
- * Watches the DOM for video elements appearing/disappearing.
+ * Returns true if this page has something we can expand:
+ * a <video> element OR a site-config playerSelector match (e.g. iframe-based player).
+ */
+function pageHasPlayer() {
+  if (document.querySelector('video')) return true;
+  const config = getSiteConfig();
+  if (config?.playerSelector) {
+    return resolveConfigPlayer(config) !== null;
+  }
+  return false;
+}
+
+/**
+ * Watches the DOM for video elements / player containers appearing or disappearing.
  * Shows / hides the floating button accordingly.
  */
 function startVideoPresenceObserver() {
   const check = () => {
-    const hasVideo = !!document.querySelector('video');
-    if (hasVideo) {
+    const hasPlayer = pageHasPlayer();
+    if (hasPlayer) {
       showButton();
     } else {
       hideButton();
-      // If we're active and the video disappeared, deactivate gracefully
-      if (isActive) {
-        deactivateFullWindow();
-      }
+      if (isActive) deactivateFullWindow();
     }
   };
 
-  // Initial check
   check();
 
   const observer = new MutationObserver(check);
