@@ -81,6 +81,15 @@ let activePlayerContainer = null;
 /** Reference to the active video element for clean restore */
 let activeVideoEl = null;
 
+/** Portal div appended to body in portal mode (avoids transform/overflow issues) */
+let playerPortal = null;
+
+/** Original DOM parent when portal mode is used */
+let playerOriginalParent = null;
+
+/** Original next sibling for precise DOM restoration */
+let playerOriginalNextSibling = null;
+
 /** The MutationObserver waiting for a video element */
 let videoWaitObserver = null;
 let videoWaitTimeout = null;
@@ -250,22 +259,63 @@ function activateWithVideo(videoEl) {
 
 /**
  * Core activation logic — applies full-window styles to the given player element.
- * Used directly for iframe-based players (no top-frame <video>).
+ * Uses "portal mode" when a CSS-transform or overflow:hidden ancestor is detected:
+ * temporarily re-parents the player to <body> so position:fixed works relative
+ * to the viewport (not to a transformed stacking context).
+ *
  * @param {Element} playerContainer
  * @param {{ elementsToHide?: string[] }|null} config
  */
 function activateWithElement(playerContainer, config) {
-  // Save references for clean restore on deactivate
   activePlayerContainer = playerContainer;
 
-  // Save and apply player container styles
-  saveStyles(playerContainer);
-  applyImportantStyles(playerContainer, PLAYER_ACTIVE_STYLES);
+  // ── Portal mode ──────────────────────────────────────────────────────────
+  // CSS transforms or overflow:hidden on ancestors break position:fixed.
+  // For non-iframe players, we move the container into a portal div on <body>.
+  const isIframe = playerContainer.tagName === 'IFRAME';
+  const needsPortal = !isIframe && hasConstrainedAncestor(playerContainer);
 
-  // Ensure the iframe inside the player also fills 100% (it usually already does,
-  // but some sites set explicit pixel dimensions on the iframe element itself).
-  // Skip if the playerContainer itself IS an iframe (it's already target).
-  if (playerContainer.tagName !== 'IFRAME') {
+  if (needsPortal) {
+    playerOriginalParent = playerContainer.parentElement;
+    playerOriginalNextSibling = playerContainer.nextSibling;
+
+    playerPortal = document.createElement('div');
+    playerPortal.id = 'fwp-portal';
+    // The portal itself is the fixed fullscreen overlay
+    applyImportantStyles(playerPortal, PLAYER_ACTIVE_STYLES);
+
+    // The moved container fills the portal 100%
+    saveStyles(playerContainer);
+    applyImportantStyles(playerContainer, {
+      position: 'static',
+      width: '100%',
+      height: '100%',
+      margin: '0',
+      padding: '0',
+      border: 'none',
+      'max-width': 'none',
+      'max-height': 'none',
+      'border-radius': '0',
+      'box-sizing': 'border-box',
+    });
+
+    document.body.appendChild(playerPortal);
+    playerPortal.appendChild(playerContainer);
+  } else {
+    // Direct mode: apply fixed styles straight to the container
+    saveStyles(playerContainer);
+    applyImportantStyles(playerContainer, PLAYER_ACTIVE_STYLES);
+  }
+
+  // ── Video element styles ─────────────────────────────────────────────────
+  if (activeVideoEl) {
+    saveStyles(activeVideoEl);
+    applyImportantStyles(activeVideoEl, VIDEO_ACTIVE_STYLES);
+  }
+
+  // ── Iframe fill fix ──────────────────────────────────────────────────────
+  // If the container wraps an iframe, ensure the iframe fills 100%.
+  if (!isIframe) {
     const iframeInPlayer = playerContainer.querySelector('iframe');
     if (iframeInPlayer) {
       saveStyles(iframeInPlayer);
@@ -273,26 +323,73 @@ function activateWithElement(playerContainer, config) {
     }
   }
 
-  // Hide site-specific layout chrome (header, sidebar, etc.)
+  // ── Hide page chrome ─────────────────────────────────────────────────────
   hiddenElements = [];
-  const elementsToHide = config?.elementsToHide ?? [];
-  for (const selector of elementsToHide) {
-    const els = document.querySelectorAll(selector);
-    els.forEach((el) => {
+
+  // 1. Site-specific selectors (from SITE_CONFIGS)
+  const siteSelectors = config?.elementsToHide ?? [];
+  for (const selector of siteSelectors) {
+    document.querySelectorAll(selector).forEach((el) => {
       saveStyles(el);
       el.style.setProperty('display', 'none', 'important');
       hiddenElements.push(el);
     });
   }
 
-  // Prevent body scrollbars from showing through
+  // 2. Generic: hide fixed/sticky elements that could bleed above our player
+  //    (only for sites without explicit config, to avoid double-hiding)
+  if (!siteSelectors.length) {
+    findStickyElements().forEach((el) => {
+      if (el === playerPortal) return;
+      saveStyles(el);
+      el.style.setProperty('visibility', 'hidden', 'important');
+      hiddenElements.push(el);
+    });
+  }
+
+  // ── Body overflow ────────────────────────────────────────────────────────
   saveStyles(document.body);
   document.body.classList.add(BODY_ACTIVE_CLASS);
 
   isActive = true;
   updateButton();
-
   safeSendMessage({ action: 'stateChanged', isActive: true });
+}
+
+/**
+ * Returns true if any ancestor has a CSS transform or overflow:hidden
+ * that would prevent position:fixed from being viewport-relative.
+ * @param {Element} el
+ * @returns {boolean}
+ */
+function hasConstrainedAncestor(el) {
+  let parent = el.parentElement;
+  while (parent && parent !== document.documentElement) {
+    const style = window.getComputedStyle(parent);
+    // Transforms create a new containing block for fixed elements
+    if (style.transform !== 'none') return true;
+    if (style.willChange === 'transform') return true;
+    if (style.filter !== 'none') return true;
+    // overflow:hidden clips children — less critical but good to handle
+    if (style.overflow === 'hidden' || style.overflowX === 'hidden' || style.overflowY === 'hidden') return true;
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
+/**
+ * Finds all fixed/sticky positioned elements on the page (excluding our own UI).
+ * These can "bleed through" on sites where z-index stacking is unusual.
+ * @returns {Element[]}
+ */
+function findStickyElements() {
+  const result = [];
+  for (const el of document.querySelectorAll('*')) {
+    if (el.id === SHADOW_HOST_ID || el.id === 'fwp-portal') continue;
+    const pos = window.getComputedStyle(el).position;
+    if (pos === 'fixed' || pos === 'sticky') result.push(el);
+  }
+  return result;
 }
 
 /**
@@ -389,7 +486,7 @@ function deactivateFullWindow() {
     videoWaitTimeout = null;
   }
 
-  // Restore hidden layout elements
+  // Restore hidden layout elements (site-specific + generic sticky)
   for (const el of hiddenElements) {
     restoreStyles(el);
   }
@@ -405,19 +502,32 @@ function deactivateFullWindow() {
     activeVideoEl = null;
   }
 
-  // Restore player container (and iframe inside it if any)
+  // Restore player container
   if (activePlayerContainer) {
     if (activePlayerContainer.tagName !== 'IFRAME') {
       const iframeInPlayer = activePlayerContainer.querySelector('iframe');
       if (iframeInPlayer) restoreStyles(iframeInPlayer);
     }
     restoreStyles(activePlayerContainer);
+
+    // If portal mode was used, move the container back to its original DOM position
+    if (playerPortal) {
+      if (playerOriginalNextSibling) {
+        playerOriginalParent.insertBefore(activePlayerContainer, playerOriginalNextSibling);
+      } else {
+        playerOriginalParent.appendChild(activePlayerContainer);
+      }
+      playerPortal.remove();
+      playerPortal = null;
+      playerOriginalParent = null;
+      playerOriginalNextSibling = null;
+    }
+
     activePlayerContainer = null;
   }
 
   isActive = false;
   updateButton();
-
   safeSendMessage({ action: 'stateChanged', isActive: false });
 }
 
