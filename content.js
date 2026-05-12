@@ -98,6 +98,10 @@ let videoWaitTimeout = null;
 let shadowHost = null;
 let shadowButton = null;
 
+/** Idle tracking — auto-hide controls & cursor after inactivity */
+let idleTimer = null;
+let idleHandlers = null;
+
 // ─── Site Config Resolution ───────────────────────────────────────────────────
 
 /**
@@ -244,6 +248,83 @@ function applyImportantStyles(el, styles) {
   }
 }
 
+// ─── Idle Tracking (auto-hide controls & cursor) ─────────────────────────────
+
+const IDLE_CLASS = 'fwp-idle';
+const IDLE_TIMEOUT_MS = 3000;
+
+/**
+ * Start mouse-idle tracking on the active player container.
+ *
+ * - On mouse movement/click/key: resets the timer, dispatches `mouseenter`
+ *   so the player's own control-show logic fires, removes IDLE_CLASS.
+ * - After IDLE_TIMEOUT_MS of inactivity: adds IDLE_CLASS (CSS hides cursor via
+ *   content.css) and dispatches `mouseleave` to trigger the player's built-in
+ *   control-hide mechanism (works with Clappr, Video.js, Plyr, etc.).
+ *
+ * @param {Element} playerContainer
+ * @param {number} [timeoutMs]
+ */
+function startIdleTracking(playerContainer, timeoutMs = IDLE_TIMEOUT_MS) {
+  stopIdleTracking();
+
+  function onActive() {
+    clearTimeout(idleTimer);
+    const wasIdle = playerContainer.classList.contains(IDLE_CLASS);
+    if (wasIdle) {
+      playerContainer.classList.remove(IDLE_CLASS);
+      // Tell the player the pointer has returned → controls reappear
+      // Dispatch both PointerEvent (Vidstack) and MouseEvent (legacy players)
+      playerContainer.dispatchEvent(new PointerEvent('pointermove',  { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+      playerContainer.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+      playerContainer.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
+      playerContainer.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true, cancelable: true }));
+    }
+    idleTimer = setTimeout(onIdle, timeoutMs);
+  }
+
+  function onIdle() {
+    playerContainer.classList.add(IDLE_CLASS);
+    // Tell the player the pointer has left → controls auto-hide
+    // Dispatch both PointerEvent (Vidstack) and MouseEvent (legacy players)
+    playerContainer.dispatchEvent(new PointerEvent('pointermove',  { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+    playerContainer.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+    playerContainer.dispatchEvent(new PointerEvent('pointerout',   { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+    playerContainer.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, cancelable: true }));
+    playerContainer.dispatchEvent(new MouseEvent('mouseout',   { bubbles: true, cancelable: true }));
+  }
+
+  document.addEventListener('mousemove',  onActive, { passive: true });
+  document.addEventListener('mousedown',  onActive, { passive: true });
+  document.addEventListener('touchstart', onActive, { passive: true });
+  document.addEventListener('keydown',    onActive, { passive: true });
+
+  idleHandlers = { onActive };
+
+  // Kick off the timer — don't hide immediately on activation
+  onActive();
+}
+
+/**
+ * Stop idle tracking and restore the player to its non-idle state.
+ */
+function stopIdleTracking() {
+  clearTimeout(idleTimer);
+  idleTimer = null;
+
+  if (idleHandlers) {
+    document.removeEventListener('mousemove',  idleHandlers.onActive);
+    document.removeEventListener('mousedown',  idleHandlers.onActive);
+    document.removeEventListener('touchstart', idleHandlers.onActive);
+    document.removeEventListener('keydown',    idleHandlers.onActive);
+    idleHandlers = null;
+  }
+
+  if (activePlayerContainer) {
+    activePlayerContainer.classList.remove(IDLE_CLASS);
+  }
+}
+
 // ─── Activate / Deactivate ───────────────────────────────────────────────────
 
 /**
@@ -350,6 +431,10 @@ function activateWithElement(playerContainer, config) {
   // ── Body overflow ────────────────────────────────────────────────────────
   saveStyles(document.body);
   document.body.classList.add(BODY_ACTIVE_CLASS);
+
+  // ── Idle tracking (auto-hide controls & cursor) ───────────────────────────
+  const idleTimeout = config?.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  startIdleTracking(playerContainer, idleTimeout);
 
   isActive = true;
   updateButton();
@@ -475,6 +560,9 @@ function resolveConfigPlayer(config) {
 /** Deactivate full-window mode and restore all original styles. */
 function deactivateFullWindow() {
   if (!isActive) return;
+
+  // Stop idle tracking first
+  stopIdleTracking();
 
   // Cancel any pending video wait
   if (videoWaitObserver) {

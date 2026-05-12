@@ -3,3 +3,43 @@
 .fwp-fullwindow-active {
   overflow: hidden !important;
 }
+
+/* ── Idle state: hide cursor when mouse is inactive in full-window mode ────── */
+
+/* Hide cursor on the player container and everything inside it */
+.fwp-idle,
+.fwp-idle * {
+  cursor: none !important;
+}
+
+/* Fade out controls when the player is idle.
+   Works in tandem with the player's own hide logic
+   triggered by synthetic pointer/mouse events from idle tracking.
+   Uses a smooth transition so it doesn't feel abrupt. */
+
+/* ── Generic player libraries ──────────────────────────────────────────────── */
+.fwp-idle [class*="control"],
+.fwp-idle [class*="Control"],
+.fwp-idle [class*="toolbar"],
+.fwp-idle [class*="Toolbar"],
+.fwp-idle .media-control,
+.fwp-idle .vjs-control-bar,
+.fwp-idle .plyr__controls,
+.fwp-idle .jw-controls,
+.fwp-idle .fp-controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.4s ease !important;
+}
+
+/* ── kino.pub — Vidstack with custom overlay UI ────────────────────────────── */
+/* .player-overlay wraps both the top title bar and the bottom controls row.   */
+/* .desktop-center-controls has the seek-10/play/seek+10 buttons.              */
+/* .center-play-btn is the mobile-only large play button.                      */
+.fwp-idle .player-overlay,
+.fwp-idle .desktop-center-controls,
+.fwp-idle .center-play-btn {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.4s ease !important;
+}
